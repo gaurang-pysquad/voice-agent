@@ -1,0 +1,47 @@
+# ---- secrets ---------------------------------------------------------------
+.env
+*.env
+*.key
+secrets.*
+
+# ---- runtime output (real customer data: never commit) ---------------------
+customer_feedback.json
+customer_feedback_*.json
+demo_calls.json
+temp.wav
+temp_user.wav
+reply.wav
+reply_cartesia.wav
+*.mp3
+samples/
+benchmark_audio/
+
+# ---- models -----------------------------------------------------------------
+# Add shruti.cact here only if you publish it as a GitHub Release asset
+# (see README §3). If you decided to commit it, remove this line.
+# shruti.cact
+
+# Other model weights: use Releases, they are far above GitHub's 100 MB limit
+*.onnx
+*.bin
+models/
+
+# ---- python / tooling --------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- editors / OS ------------------------------------------------------------
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ---- caches ------------------------------------------------------------------
+.cache/
