@@ -87,7 +87,7 @@ def transcribe(audio):
     wav_path = save_wav(audio)
     result = stt_model.transcribe(wav_path)
     text = result.get("text", "").strip()
-    print(f"📝 You said: {text}")
+    # print(f"📝 You said: {text}")
     return text
 
 # ================== TTS FUNCTIONS ==================
@@ -261,7 +261,7 @@ def run_conversation():
     }
 
     # Opening message
-    opening = "नमस्ते! Hello, main aapke recent order ke baare mein feedback lene ke liye call kar raha hoon. Kya aapke paas 1-2 minute hain baat karne ke liye?"
+    opening = "नमस्ते! Hello, main aapke recent order ke baare mein feedback lene ke liye call kar rahi hoon. Kya aapke paas 1-2 minute hain baat karne ke liye?"
     speak(opening, language="hindi")
     history.append({"role": "assistant", "content": opening})
     collected["full_transcript"].append(f"Agent: {opening}")
