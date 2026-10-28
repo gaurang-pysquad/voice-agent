@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      color: #333;
+    }
+
+    .panel {
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 10px;
+    }
+
+    #status {
+      margin-bottom: 12px;
+      font-size: 14px;
+    }
+
+    button {
+      padding: 10px 14px;
+      border: 0;
+      border-radius: 8px;
+      background: #0e7490;
+      color: white;
+      cursor: pointer;
+    }
+
+    #audio {
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="panel">
+    <div id="status">Initializing voice conversation…</div>
+
+    <button id="enable">
+      Enable microphone and audio
+    </button>
+
+    <button id="retry" style="display:none">
+      Try microphone again
+    </button>
+
+    <audio id="audio" preload="auto"></audio>
+  </div>
+
+  <script>
+    (() => {
+      const statusEl = document.getElementById("status");
+      const enableBtn = document.getElementById("enable");
+      const retryBtn = document.getElementById("retry");
+      const audioEl = document.getElementById("audio");
+
+      let args = {};
+      let started = false;
+      let recording = false;
+      let permissionStream = null;
+      let recorder = null;
+      let chunks = [];
+      let activeResponseId = "";
+      let lastSentTurnId = "";
+      let playbackTimer = null;
+      let recordingTimer = null;
+      let playbackFinished = false;
+
+      const played = new Set();
+
+      function send(type, data = {}) {
+        window.parent.postMessage({
+          isStreamlitMessage: true,
+          type: type,
+          ...data
+        }, "*");
+      }
+
+      function setValue(value) {
+        send("streamlit:setComponentValue", { value: value });
+      }
+
+      function setHeight() {
+        send("streamlit:setFrameHeight", { height: 100 });
+      }
+
+      function ready() {
+        send("streamlit:componentReady", {
+          apiVersion: 1
+        });
+      }
+
+      async function getMicrophone() {
+        if (!navigator.mediaDevices ||
+            !navigator.mediaDevices.getUserMedia) {
+          throw new Error(
+            "Microphone requires localhost or HTTPS."
+          );
+        }
+
+        permissionStream =
+          await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true
+            }
+          });
+
+        return permissionStream;
+      }
+
+      async function enableConversation() {
+        try {
+          statusEl.textContent =
+            "Requesting microphone permission…";
+
+          await getMicrophone();
+
+          started = true;
+          enableBtn.style.display = "none";
+          retryBtn.style.display = "none";
+
+          statusEl.textContent =
+            "Microphone ready. Starting conversation…";
+
+          setValue({
+            action: "microphone_ready",
+            event_id: Date.now().toString()
+          });
+
+          // Handle an audio response that arrived before permission.
+          playResponse();
+
+        } catch (err) {
+          statusEl.textContent =
+            "Microphone error: " + err.message;
+
+          retryBtn.style.display = "inline-block";
+        }
+      }
+
+      function chooseMimeType() {
+        if (!window.MediaRecorder) {
+          return "";
+        }
+
+        const types = [
+          "audio/webm;codecs=opus",
+          "audio/webm",
+          "audio/ogg;codecs=opus"
+        ];
+
+        return types.find(type =>
+          MediaRecorder.isTypeSupported(type)
+        ) || "";
+      }
+
+      function stopRecording() {
+        if (recorder && recorder.state === "recording") {
+          recorder.stop();
+        }
+      }
+
+      async function startRecording() {
+        if (recording || !started || args.finished) {
+          return;
+        }
+
+        try {
+          const stream =
+            permissionStream || await getMicrophone();
+
+          if (!window.MediaRecorder) {
+            throw new Error(
+              "This browser does not support MediaRecorder."
+            );
+          }
+
+          chunks = [];
+
+          const mimeType = chooseMimeType();
+
+          recorder = mimeType
+            ? new MediaRecorder(stream, { mimeType })
+            : new MediaRecorder(stream);
+
+          recording = true;
+
+          recorder.ondataavailable = event => {
+            if (event.data && event.data.size > 0) {
+              chunks.push(event.data);
+            }
+          };
+
+          recorder.onerror = event => {
+            recording = false;
+
+            statusEl.textContent =
+              "Recording error. Please try again.";
+
+            retryBtn.style.display = "inline-block";
+
+            console.error("Recorder error:", event);
+          };
+
+          recorder.onstop = () => {
+            recording = false;
+
+            if (recordingTimer) {
+              clearTimeout(recordingTimer);
+              recordingTimer = null;
+            }
+
+            if (!chunks.length) {
+              statusEl.textContent =
+                "No audio captured. Please try again.";
+
+              setTimeout(startRecording, 1000);
+              return;
+            }
+
+            const blob = new Blob(chunks, {
+              type: recorder.mimeType || "audio/webm"
+            });
+
+            if (blob.size === 0) {
+              statusEl.textContent =
+                "Empty recording. Please try again.";
+
+              setTimeout(startRecording, 1000);
+              return;
+            }
+
+            statusEl.textContent =
+              "Sending your response…";
+
+            const reader = new FileReader();
+
+            reader.onloadend = () => {
+              const result = String(reader.result || "");
+              const base64Audio = result.includes(",")
+                ? result.split(",")[1]
+                : "";
+
+              if (!base64Audio) {
+                statusEl.textContent =
+                  "Could not prepare your audio.";
+
+                return;
+              }
+
+              const turnId =
+                activeResponseId + "-" + Date.now();
+
+              if (turnId === lastSentTurnId) {
+                return;
+              }
+
+              lastSentTurnId = turnId;
+
+              setValue({
+                action: "audio_recorded",
+                turn_id: turnId,
+                audio_b64: base64Audio,
+                mime_type: blob.type
+              });
+
+              statusEl.textContent =
+                "Your response was sent. Waiting for the agent…";
+            };
+
+            reader.onerror = () => {
+              statusEl.textContent =
+                "Could not read the recording.";
+            };
+
+            reader.readAsDataURL(blob);
+          };
+
+          recorder.start(250);
+
+          statusEl.textContent =
+            "Listening… Please speak now.";
+
+          setValue({
+            action: "recording_started",
+            event_id: Date.now().toString()
+          });
+
+          const seconds = Math.max(
+            1,
+            Number(args.record_seconds || 5)
+          );
+
+          recordingTimer = setTimeout(
+            stopRecording,
+            seconds * 1000
+          );
+
+        } catch (err) {
+          recording = false;
+
+          statusEl.textContent =
+            "Could not start recording: " + err.message;
+
+          retryBtn.style.display = "inline-block";
+        }
+      }
+
+      function finishPlayback(responseId) {
+        if (playbackFinished) {
+          return;
+        }
+
+        playbackFinished = true;
+
+        if (playbackTimer) {
+          clearTimeout(playbackTimer);
+          playbackTimer = null;
+        }
+
+        audioEl.onended = null;
+        audioEl.onerror = null;
+        audioEl.onloadedmetadata = null;
+
+        statusEl.textContent = "Agent finished speaking.";
+
+        setValue({
+          action: "playback_finished",
+          response_id: responseId,
+          event_id: Date.now().toString()
+        });
+
+        if (args.finished) {
+          statusEl.textContent = "Conversation complete.";
+          return;
+        }
+
+        // Start recording after the agent finishes.
+        setTimeout(startRecording, 500);
+      }
+
+      async function playResponse() {
+        const responseId = String(args.response_id || "");
+        const audioB64 = String(args.audio_b64 || "");
+
+        if (!started || !responseId || !audioB64) {
+          return;
+        }
+
+        if (played.has(responseId)) {
+          return;
+        }
+
+        // Prevent recording from overlapping agent playback.
+        if (recording) {
+          stopRecording();
+        }
+
+        played.add(responseId);
+        activeResponseId = responseId;
+        playbackFinished = false;
+
+        let objectUrl = null;
+
+        try {
+          const raw = atob(audioB64);
+          const bytes = new Uint8Array(raw.length);
+
+          for (let i = 0; i < raw.length; i++) {
+            bytes[i] = raw.charCodeAt(i);
+          }
+
+          const blob = new Blob([bytes], {
+            type: "audio/mpeg"
+          });
+
+          objectUrl = URL.createObjectURL(blob);
+
+          audioEl.pause();
+          audioEl.src = objectUrl;
+
+          audioEl.onended = () => {
+            finishPlayback(responseId);
+          };
+
+          audioEl.onerror = () => {
+            if (playbackTimer) {
+              clearTimeout(playbackTimer);
+              playbackTimer = null;
+            }
+
+            statusEl.textContent =
+              "Audio playback failed. Click retry.";
+
+            played.delete(responseId);
+            enableBtn.style.display = "inline-block";
+            enableBtn.textContent = "Retry audio";
+          };
+
+          audioEl.onloadedmetadata = () => {
+            // Fallback in case the browser doesn't fire "ended".
+            const duration = audioEl.duration;
+
+            if (Number.isFinite(duration) && duration > 0) {
+              if (playbackTimer) {
+                clearTimeout(playbackTimer);
+              }
+
+              playbackTimer = setTimeout(() => {
+                finishPlayback(responseId);
+              }, (duration + 3) * 1000);
+            }
+          };
+
+          audioEl.load();
+
+          statusEl.textContent = "Agent is speaking…";
+
+          await audioEl.play();
+
+          // General fallback if metadata or ended events fail.
+          // The timeout is refreshed once duration is known.
+          if (!playbackTimer) {
+            playbackTimer = setTimeout(() => {
+              if (!playbackFinished) {
+                if (audioEl.ended) {
+                  finishPlayback(responseId);
+                } else if (
+                  Number.isFinite(audioEl.duration) &&
+                  audioEl.duration > 0 &&
+                  audioEl.currentTime >= audioEl.duration - 0.25
+                ) {
+                  finishPlayback(responseId);
+                } else {
+                  // Try to recover by checking playback again.
+                  playbackTimer = setTimeout(() => {
+                    if (!playbackFinished) {
+                      finishPlayback(responseId);
+                    }
+                  }, 3000);
+                }
+              }
+            }, 15000);
+          }
+
+        } catch (err) {
+          console.error("Audio playback error:", err);
+
+          if (playbackTimer) {
+            clearTimeout(playbackTimer);
+            playbackTimer = null;
+          }
+
+          played.delete(responseId);
+
+          statusEl.textContent =
+            "Playback error: " + err.message;
+
+          enableBtn.style.display = "inline-block";
+          enableBtn.textContent = "Retry audio";
+
+        } finally {
+          // Keep the audio element URL alive during playback.
+          // Revoke it only after playback has finished.
+          if (objectUrl) {
+            const currentUrl = objectUrl;
+
+            const cleanup = () => {
+              try {
+                URL.revokeObjectURL(currentUrl);
+              } catch (_) {}
+            };
+
+            audioEl.addEventListener(
+              "ended",
+              cleanup,
+              { once: true }
+            );
+          }
+        }
+      }
+
+      function onRender(event) {
+        if (
+          !event.data ||
+          event.data.type !== "streamlit:render"
+        ) {
+          return;
+        }
+
+        args = event.data.args || {};
+
+        setHeight();
+
+        if (!started) {
+          statusEl.textContent =
+            "Click the button to enable microphone access.";
+
+          enableBtn.style.display = "inline-block";
+          return;
+        }
+
+        enableBtn.style.display = "none";
+
+        playResponse();
+      }
+
+      enableBtn.addEventListener(
+        "click",
+        enableConversation
+      );
+
+      retryBtn.addEventListener(
+        "click",
+        enableConversation
+      );
+
+      window.addEventListener("message", onRender);
+
+      ready();
+      setHeight();
+    })();
+  </script>
+</body>
+</html>
